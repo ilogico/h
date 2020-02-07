@@ -1,0 +1,10 @@
+version: '3.7'
+services:
+  web:
+    image: nginx
+    volumes:
+      - type: bind
+        source: .
+        target: /usr/share/nginx/html
+    ports:
+      - '8080:80'
