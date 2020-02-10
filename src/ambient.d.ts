@@ -4,5 +4,7 @@ declare namespace JSX {
         div: any;
         button: any;
         span: any;
+        input: any;
+        form: any;
     }
 }

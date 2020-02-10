@@ -341,6 +341,7 @@ class ComponentNode implements BaseVNode {
     depth: number;
     providers: Record<string, ProviderNode>;
     dirty = false;
+    mounted = true;
 
     constructor(config: ComponentConfig, { depth, providers }: NodeContext) {
         this.config = config;
@@ -402,6 +403,7 @@ class ComponentNode implements BaseVNode {
     }
 
     private cleanup() {
+        this.mounted = false;
         this.dirty = false;
         this.state?.runCleanupEffects();
     }
@@ -613,6 +615,8 @@ export function Fragment({ children }: { children?: NodeConfig[] }) {
 export function mount(config: NodeConfig, element: Element | null) {
     const vnode = createVNode(config, { depth: 0, providers: {} });
     element?.appendChild(vnode.getNodeForInsertion());
+    renderController.runLayoutEffects();
+    renderController.renderLoop();
 }
 
 interface Effect {
@@ -667,29 +671,39 @@ class State {
 class RenderController {
     private updateQueue: ComponentNode[] = [];
     private effects: (() => void)[] = [];
+    private layoutEffects: (() => void)[] = [];
+
+    renderLoop = () => {
+        const { updateQueue, layoutEffects } = this;
+        while (updateQueue.length) {
+            do {
+                const node = dequeueNode(updateQueue);
+                if (node.dirty && node.mounted) {
+                    node.rerender();
+                }
+            } while (updateQueue.length);
+
+            while (layoutEffects.length) {
+                const effect = layoutEffects.pop()!;
+                effect();
+            }
+        }
+    };
 
     requestComponentRerender(node: ComponentNode) {
-        if (node.dirty) {
+        if (node.dirty || !node.mounted) {
             return;
         }
         node.dirty = true;
         const { updateQueue } = this;
-        if (updateQueue.length === 0) Promise.resolve().then(() => {
-            while (updateQueue.length) {
-                const node = dequeueNode(updateQueue);
-                if (node.dirty) {
-                    node.rerender();
-                }
-            }
-        });
-
+        if (updateQueue.length === 0) Promise.resolve().then(this.renderLoop);
         enqueueNode(updateQueue, node);
     }
 
     requestEffect(effect: () => void) {
         const { effects } = this;
 
-        if (effects.length === 0) Promise.resolve().then(() => {
+        if (effects.length === 0) requestAnimationFrame(() => {
             while (effects.length > 0) {
                 const effect = effects.pop()!;
                 effect();
@@ -697,6 +711,18 @@ class RenderController {
         });
 
         effects.push(effect);
+    }
+
+    requestLayoutEffect(effect: () => void) {
+        this.layoutEffects.push(effect);
+    }
+
+    runLayoutEffects() {
+        const { layoutEffects } = this;
+        while (layoutEffects.length) {
+            const effect = layoutEffects.pop()!;
+            effect();
+        }
     }
 }
 
@@ -761,6 +787,7 @@ interface Hooks {
     useState<T>(): [T | undefined, (update: T | undefined | ((old: T | undefined) => T)) => void];
     useMemo<T>(producer: () => T, dependencies: readonly unknown[]): T;
     useEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]): void;
+    useLayoutEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]): void;
     useContext<T>(context: Context<T>): T;
 }
 
@@ -793,12 +820,11 @@ class CreationHooks implements Hooks {
     }
 
     useEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[]) {
-        const effect: Effect = { dependencies, cleanup: undefined };
-        this.vnode.getOrCreateState().addEffect(effect);
+        this.useCommonEffect(false, action, dependencies);
+    }
 
-        renderController.requestEffect(() => {
-            effect.cleanup = action();
-        });
+    useLayoutEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[]) {
+        this.useCommonEffect(true, action, dependencies);
     }
 
     useContext<T>(context: Context<T>): T {
@@ -812,6 +838,14 @@ class CreationHooks implements Hooks {
         }
 
         return data.context.defaultValue;
+    }
+
+    private useCommonEffect(layout: boolean, action: () => undefined | (() => void), dependencies?: readonly unknown[]) {
+        const data: Effect = { dependencies, cleanup: undefined };
+        this.vnode.getOrCreateState().addEffect(data);
+        const effect = () => { data.cleanup = action(); };
+        if (layout) renderController.requestLayoutEffect(effect);
+        else renderController.requestEffect(effect);
     }
 }
 
@@ -848,20 +882,30 @@ class UpdateHooks implements Hooks {
     }
 
     useEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[] | undefined): void {
-        const effect = this.vnode.getState().getEffect(this.effectIndex++);
+        this.useCommonEffect(false, action, dependencies);
+    }
 
-        let diff = !dependencies || !effect.dependencies || dependencies.length !== effect.dependencies.length;
+    useLayoutEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[] | undefined): void {
+        this.useCommonEffect(true, action, dependencies);
+    }
+
+    private useCommonEffect(layout: boolean, action: () => undefined | (() => void), dependencies?: readonly unknown[] | undefined): void {
+        const data = this.vnode.getState().getEffect(this.effectIndex++);
+
+        let diff = !dependencies || !data.dependencies || dependencies.length !== data.dependencies.length;
         for (let i = 0; !diff && i < dependencies!.length; i++) {
-            if (dependencies![i] !== effect.dependencies![i]) {
+            if (dependencies![i] !== data.dependencies![i]) {
                 diff = true;
             }
         }
 
         if (diff) {
-            renderController.requestEffect(() => {
-                effect.cleanup?.();
-                effect.cleanup = action() as undefined;
-            });
+            const effect = () => {
+                data.cleanup?.();
+                data.cleanup = action() as undefined;
+            };
+            if (layout) renderController.requestLayoutEffect(effect);
+            else renderController.requestEffect(effect);
         }
     }
 
@@ -910,6 +954,11 @@ export function useCallback<C extends (...args: never[]) => unknown>(callback: C
 export function useEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]) {
     return hooks.useEffect(effect, dependencies);
 }
+
+export function useLayoutEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]) {
+    return hooks.useLayoutEffect(effect, dependencies);
+}
+
 
 export function useContext<T>(context: Context<T>): T {
     return hooks.useContext(context);

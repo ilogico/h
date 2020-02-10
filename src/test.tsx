@@ -1,4 +1,4 @@
-import { createContext, Fragment, h, mount, useCallback, useContext, useEffect, useState } from './h.js';
+import { createContext, Fragment, h, mount, useCallback, useContext, useLayoutEffect, useState } from './h.js';
 
 function App() {
     const [counter, setCounter] = useState(0);
@@ -11,20 +11,25 @@ function App() {
             {counter % 10 === 0 ? <RoundNumber /> : <ClickCounter />}
             <Controls />
             <DisplayValue />
+            <Form />
         </Fragment>
     );
 }
 
 function RoundNumber() {
-    useEffect(
+    const [value, setValue] = useState(0);
+
+    useLayoutEffect(
         () => {
-            console.log('mounting RoundNumber');
-            return () => console.log('unmounting RoundNumber');
-        }
+            if (value < 5) {
+                // alert(value);
+                setValue(value + 1);
+            }
+        },
+        [value],
     );
 
-    useEffect(() => { })
-    return <div>Hit a round number!</div>;
+    return <div>Hit a round number! <span>{value}</span></div>;
 }
 
 function ClickCounter() {
@@ -50,7 +55,7 @@ function CenasController() {
     const decrement = useCallback(() => setValue(value => value - 1), []);
 
     return (
-        <CenasContext.Provider value={{ value, increment, decrement}}>
+        <CenasContext.Provider value={{ value, increment, decrement }}>
             <App />
         </CenasContext.Provider>
     );
@@ -75,3 +80,18 @@ mount(
     <CenasController />,
     document.getElementById('app-root'),
 );
+
+function Form() {
+    const [value, setValue] = useState('');
+    const handleInput = useCallback(
+        (event: any) => setValue(event.target.value),
+        [],
+    );
+    return (
+        <form>
+            <input value={value} oninput={handleInput} />
+            <div>{value}</div>
+            <button type="reset">reset</button>
+        </form>
+    );
+}
