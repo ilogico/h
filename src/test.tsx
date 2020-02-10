@@ -1,7 +1,11 @@
-import { createContext, Fragment, h, mount, useCallback, useContext, useLayoutEffect, useState } from './h.js';
+import { createContext, Fragment, h, mount, useCallback, useContext, useLayoutEffect, useState, useRef, useImperativeHandle, Ref } from './h.js';
 
 function App() {
     const [counter, setCounter] = useState(0);
+
+    const formRef = useRef<{ focus: () => void } | null >(null);
+
+    const focusForm = useCallback(() => formRef.current?.focus(), []);
 
     return (
         <Fragment>
@@ -11,7 +15,8 @@ function App() {
             {counter % 10 === 0 ? <RoundNumber /> : <ClickCounter />}
             <Controls />
             <DisplayValue />
-            <Form />
+            <button onclick={focusForm}>Focus form</button>
+            <Form ref={formRef} />
         </Fragment>
     );
 }
@@ -81,15 +86,24 @@ mount(
     document.getElementById('app-root'),
 );
 
-function Form() {
+function Form({ ref }: { ref?: Ref<{ focus(): void } | null> }) {
     const [value, setValue] = useState('');
     const handleInput = useCallback(
         (event: any) => setValue(event.target.value),
         [],
     );
+
+    const inputRef = useRef<HTMLInputElement | null>(null);
+
+    useImperativeHandle(
+        ref,
+        () => ({ focus: () => { inputRef.current?.focus() }}),
+        [],
+    );
+
     return (
         <form>
-            <input value={value} oninput={handleInput} />
+            <input value={value} oninput={handleInput} ref={inputRef} />
             <div>{value}</div>
             <button type="reset">reset</button>
         </form>

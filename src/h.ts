@@ -144,20 +144,20 @@ class ElementNode extends SingleNodeVNode {
                 const [oldName, oldValue] = oldAttributes[o];
                 const [newName, newValue] = newAttributes[n];
                 if (oldName < newName) {
-                    this.removeAttribute(oldName);
+                    this.removeAttribute(oldName, oldValue);
                     o++;
                 } else if (oldName > newName) {
                     this.addAttribute(newName, newValue, context);
                     n++;
                 } else {
-                    if (oldValue !== newValue) this.updateAttribute(newName, newValue, context);
+                    if (oldValue !== newValue) this.updateAttribute(newName, oldValue, newValue, context);
                     o++;
                     n++;
                 }
             }
 
             for (; o < oldAttributes.length; o++) {
-                this.removeAttribute(oldAttributes[o][0]);
+                this.removeAttribute(oldAttributes[o][0], oldAttributes[o][1]);
             }
 
             for (; n < newAttributes.length; n++) {
@@ -173,6 +173,12 @@ class ElementNode extends SingleNodeVNode {
             const children = createChildNodes(value as NodeConfig[], context);
             children?.forEach(c => node.appendChild(c.getNodeForInsertion()));
             this.children = children;
+        } else if (name === 'ref') {
+            if (typeof value === 'function') {
+                value(node);
+            } else {
+                value.current = node;
+            }
         } else {
             /// @ts-ignore
             node[name] = value;
@@ -185,13 +191,19 @@ class ElementNode extends SingleNodeVNode {
         attributes?.forEach(([name, value]) => this.addAttribute(name, value, context));
     }
 
-    private removeAttribute(name: string) {
+    private removeAttribute(name: string, oldValue: any) {
         if (name === 'children') {
             const { children } = this;
             if (!children) return;
 
             this.children = undefined;
             children.forEach(c => c.unmount());
+        } else if (name === 'ref') {
+            if (typeof oldValue === 'function') {
+                oldValue(null);
+            } else {
+                oldValue.current = null;
+            }
         } else {
             /// @ts-ignore
             node[name] = null;
@@ -203,13 +215,13 @@ class ElementNode extends SingleNodeVNode {
         if (!attributes) return;
 
         this.attributes = undefined;
-        attributes.forEach(([name]) => this.removeAttribute(name));
+        attributes.forEach(([name, value]) => this.removeAttribute(name, value));
     }
 
-    private updateAttribute(name: string, value: any, context: NodeContext) {
+    private updateAttribute(name: string, oldValue: any, newValue: any, context: NodeContext) {
         const { node } = this;
         if (name === 'children') {
-            const configs: NodeConfig[] = value ?? [];
+            const configs: NodeConfig[] = newValue ?? [];
             const children = this.children ?? [];
             let i = 0;
             for (; i < children.length && i < configs.length; i++) {
@@ -224,9 +236,13 @@ class ElementNode extends SingleNodeVNode {
                 children.push(child);
             }
             this.children = children.length > 0 ? children : undefined;
+        } else if (name === 'ref') {
+            this.removeAttribute('ref', oldValue);
+            this.addAttribute('ref', newValue, context);
+
         } else {
             /// @ts-ignore
-            node[name] = value;
+            node[name] = newValue;
         }
     }
 }
@@ -789,7 +805,11 @@ interface Hooks {
     useEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]): void;
     useLayoutEffect(effect: () => void | (() => void), dependencies?: readonly unknown[]): void;
     useContext<T>(context: Context<T>): T;
+    useImperativeHandle<T>(ref: Ref<T | null> | undefined, producer: () => T, dependencies?: readonly unknown[]): void;
+    useRef<T>(init: T | (() => T)): { current: T };
 }
+
+export type Ref<T> = { current: T } | ((current: T) => void);
 
 class CreationHooks implements Hooks {
     constructor(private readonly vnode: ComponentNode) {
@@ -820,11 +840,11 @@ class CreationHooks implements Hooks {
     }
 
     useEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[]) {
-        this.useCommonEffect(false, action, dependencies);
+        renderController.requestEffect(this.useCommonEffect(action, dependencies));
     }
 
     useLayoutEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[]) {
-        this.useCommonEffect(true, action, dependencies);
+        renderController.requestLayoutEffect(this.useCommonEffect(action, dependencies));
     }
 
     useContext<T>(context: Context<T>): T {
@@ -840,12 +860,35 @@ class CreationHooks implements Hooks {
         return data.context.defaultValue;
     }
 
-    private useCommonEffect(layout: boolean, action: () => undefined | (() => void), dependencies?: readonly unknown[]) {
+    useImperativeHandle<T>(ref: Ref<T | null>, producer: () => T, dependencies?: readonly unknown[]): void {
+        const state = this.vnode.getOrCreateState();
+        const effect: Effect = { cleanup: undefined, dependencies: undefined };
+        const data = { ref, imperativeHandle: undefined as unknown as T, dependencies };
+        state.addData(data);
+        state.addEffect(effect);
+
+        data.imperativeHandle = producer();
+        if (typeof ref === 'function') {
+            ref(data.imperativeHandle);
+            effect.cleanup = () => ref(null);
+        } else if (ref) {
+            ref.current = data.imperativeHandle;
+            effect.cleanup = () => ref.current = null;
+        }
+
+    }
+
+    useRef<T>(init: T | (() => T)) {
+        const data = { value: undefined as unknown as T };
+        this.vnode.getOrCreateState().addData(data);
+        /// @ts-ignore
+        return data.value = { current: typeof init === 'function' ? init() : init };
+    }
+
+    private useCommonEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[]): () => void {
         const data: Effect = { dependencies, cleanup: undefined };
         this.vnode.getOrCreateState().addEffect(data);
-        const effect = () => { data.cleanup = action(); };
-        if (layout) renderController.requestLayoutEffect(effect);
-        else renderController.requestEffect(effect);
+        return () => { data.cleanup = action(); };
     }
 }
 
@@ -882,31 +925,13 @@ class UpdateHooks implements Hooks {
     }
 
     useEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[] | undefined): void {
-        this.useCommonEffect(false, action, dependencies);
+        const effect = this.useCommonEffect(action, dependencies);
+        if (effect) renderController.requestEffect(effect);
     }
 
     useLayoutEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[] | undefined): void {
-        this.useCommonEffect(true, action, dependencies);
-    }
-
-    private useCommonEffect(layout: boolean, action: () => undefined | (() => void), dependencies?: readonly unknown[] | undefined): void {
-        const data = this.vnode.getState().getEffect(this.effectIndex++);
-
-        let diff = !dependencies || !data.dependencies || dependencies.length !== data.dependencies.length;
-        for (let i = 0; !diff && i < dependencies!.length; i++) {
-            if (dependencies![i] !== data.dependencies![i]) {
-                diff = true;
-            }
-        }
-
-        if (diff) {
-            const effect = () => {
-                data.cleanup?.();
-                data.cleanup = action() as undefined;
-            };
-            if (layout) renderController.requestLayoutEffect(effect);
-            else renderController.requestEffect(effect);
-        }
+        const effect = this.useCommonEffect(action, dependencies);
+        if (effect) renderController.requestLayoutEffect(effect);
     }
 
     useContext<T>(context: Context<T>) {
@@ -933,6 +958,54 @@ class UpdateHooks implements Hooks {
             : data.context.defaultValue;
     }
 
+    useImperativeHandle<T>(ref: Ref<T | null>, producer: () => T, dependencies?: readonly unknown[]): void {
+        const state = this.vnode.getState();
+        const data = state.getData(this.stateIndex++);
+        const effect = state.getEffect(this.effectIndex++);
+
+        if (ref !== data.ref) {
+            effect.cleanup?.();
+            data.ref = ref;
+        }
+
+        if (haveDependenciesChanged(data.dependencies, dependencies)) {
+            data.imperativeHandle = producer();
+            if (typeof ref === 'function') {
+                effect.cleanup = () => ref(null);
+                ref(data.imperativeHandle);
+            } else if (ref) {
+                effect.cleanup = () => ref.current = null;
+                ref.current = data.imperativeHandle as T;
+            } else {
+                effect.cleanup = undefined;
+            }
+        }
+    }
+
+    useRef<T>(): { current: T } {
+        return this.vnode.getState().getData(this.stateIndex++).value;
+    }
+
+    private useCommonEffect(action: () => undefined | (() => void), dependencies?: readonly unknown[] | undefined): (() => void) | null {
+        const data = this.vnode.getState().getEffect(this.effectIndex++);
+        if (haveDependenciesChanged(data.dependencies, dependencies)) {
+            data.dependencies = dependencies;
+            return () => {
+                data.cleanup?.();
+                data.cleanup = action() as undefined;
+            };
+        }
+        return null;
+    }
+}
+
+function haveDependenciesChanged(previous: readonly unknown[] | undefined, next: readonly unknown[] | undefined) {
+    if (!previous || !next || previous.length !== next.length) return true;
+    const { length } = previous;
+    for (let i = 0; i < length; i++) {
+        if (previous[i] !== next[i]) return true;
+    }
+    return false;
 }
 
 let hooks!: Hooks;
@@ -962,4 +1035,12 @@ export function useLayoutEffect(effect: () => void | (() => void), dependencies?
 
 export function useContext<T>(context: Context<T>): T {
     return hooks.useContext(context);
+}
+
+export function useImperativeHandle<T>(ref: Ref<T | null> | undefined, producer: () => T, dependencies?: readonly unknown[]) {
+    return hooks.useImperativeHandle(ref, producer, dependencies);
+}
+
+export function useRef<T>(init: T | (() => T)): { current: T } {
+    return hooks.useRef(init);
 }

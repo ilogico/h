@@ -7,7 +7,7 @@ The purpose is to educate myself more than anything else.
 ## What seems to work (it's not thoroughly tested yet :)
 - functional components (no Component, no PureComponent)
 - context API (only Context.Provider, no Context.Consumer)
-- hooks: `useState`, `useMemo`, `useEffect`, `useLayoutEffect` and `useContext`
+- hooks: `useState`, `useMemo`, `useEffect`, `useLayoutEffect`, `useContext`, `useRef` and `useImperativeHandle`
 
 ## What's missing
 - better typings
@@ -22,3 +22,9 @@ The purpose is to educate myself more than anything else.
 - Firefox always repaint
 - if we use a break point, the browser both Chromium and Firefox repaing
 - `Promise.resolve().then` is not enough for Chromium to repaint, we must use `requestAnimationFrame`
+### `useLayoutEffect` vs setting state during render
+- React does not appear to commit the changes to the DOM when setting state during render
+- but my implementation does, it treats them the same way as if they were done during `useLayouEffect`
+
+## Doubts
+- should refs be setup during render (current implementation) or during the layout effects phase?
